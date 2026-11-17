@@ -1,0 +1,14 @@
+{
+  "type": "record",
+  "name": "ProductCatalogItem",
+  "namespace": "io.clickstream.avro",
+  "doc": "Versioned product catalogue entry stored in compacted Kafka topic product.catalog.v1 for Flink temporal joins.",
+  "fields": [
+    {"name": "product_id", "type": "string", "doc": "Primary key SKU identifier"},
+    {"name": "product_name", "type": "string", "doc": "Display product title"},
+    {"name": "category", "type": "string", "doc": "Product category"},
+    {"name": "price", "type": "double", "doc": "Unit price in USD effective as of updated_at_ms"},
+    {"name": "currency", "type": "string", "default": "USD", "doc": "ISO-4217 currency code"},
+    {"name": "updated_at_ms", "type": "long", "doc": "Effective timestamp of this price/metadata version in epoch milliseconds"}
+  ]
+}
