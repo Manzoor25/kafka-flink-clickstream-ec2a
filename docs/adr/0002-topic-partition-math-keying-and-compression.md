@@ -13,7 +13,7 @@ Clickstream traffic is bursty (flash sales produce 10x spikes), exhibits heavy Z
   - Safe single-partition Flink stateful RocksDB consumer budget ($C_p$): ~1,500–4,500 events/s per subtask (accounting for RocksDB point lookups on dedup + temporal join + session timers).
   - Safe single-partition replicated KRaft producer budget ($P_p$ with `acks=all`, RF=3): ~10 MB/s.
 - **Production formula:** $N_{\text{prod}} = \lceil 50{,}000 / 1{,}500 \rceil = 34 \rightarrow \mathbf{36\text{ partitions}}$ (evenly divisible by 3 brokers = 12 leaders/broker and Flink parallelisms 4, 6, 9, 12, 18, 36).
-- **Local Docker Compose sizing:** Scaled proportionally to **12 partitions** on `clickstream.raw.v1` (4 leaders per broker across 3 brokers, evenly divisible by Flink parallelism 2 and 4) and **6 partitions** on compacted `product.catalog.v1` and derived analytics topics (`replication.factor=3`, `min.insync.replicas=2`).
+- **Local Docker Compose sizing:** Scaled proportionally to **12 partitions** on both `clickstream.raw.v1` and compacted `product.catalog.v1` (4 leaders per broker across 3 brokers, evenly divisible by Flink parallelisms 2 and 4 so every parallel temporal-join subtask receives watermark advances) and **6 partitions** on derived analytics topics (`replication.factor=3`, `min.insync.replicas=2`).
 
 ### Partition Key Choice
 - `product_id`: Rejected — top 1% of hero SKUs generate >30% of clicks during promotions, causing severe hot-partition lag and unbalanced RocksDB subtasks.
@@ -27,5 +27,5 @@ Clickstream traffic is bursty (flash sales produce 10x spikes), exhibits heavy Z
 
 ## Consequences
 
-- **Positive:** `lz4` with `linger.ms=20` and `batch.size=64 KiB` achieves multi-fold wire/disk reduction with minimal CPU overhead and keeps batching delay at $\le 20\text{ ms}$ (less than 1% of our sub-few-second dashboard freshness budget). `zstd` achieves slightly smaller byte size on JSON/Avro batches at higher producer CPU cost and remains available for archival topics.
+- **Positive:** Measured on our 3-broker Kafka `4.4.0` KRaft cluster (`docs/benchmarks/producer_benchmark.md`, 25,000 Avro events/run), `lz4` shrinks wire payload by **2.09x–2.25x** (`4,011 KB` uncompressed $\rightarrow$ `1,669 KB`) and reaches **126,544 events/s** (`18.54 MB/s`) at `linger.ms=50, batch.size=128 KiB`, while `zstd` (`linger.ms=20, batch.size=64 KiB`) shrinks wire payload by **3.62x** (`1,035 KB`) at **124,255 events/s** (`18.20 MB/s`, ACK `p50 = 124.51 ms`, `p95 = 168.62 ms`). Keeping `linger.ms=20` bounds producer batching delay to $\le 20\text{ ms}$ (< 0.6% of our measured `3.90 s` p50 dashboard freshness).
 - **Negative:** Keying by `user_id` means anonymous bot floods sharing a synthetic `user_id` would skew one partition; production edge gateways mitigate this by salting unauthenticated bot traffic or rate-limiting at the CDN.
