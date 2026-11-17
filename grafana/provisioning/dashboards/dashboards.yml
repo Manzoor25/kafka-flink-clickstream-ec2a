@@ -1,0 +1,13 @@
+apiVersion: 1
+
+providers:
+  - name: Clickstream Real-Time Analytics
+    orgId: 1
+    folder: Real-Time Analytics
+    type: file
+    disableDeletion: false
+    editable: true
+    updateIntervalSeconds: 5
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

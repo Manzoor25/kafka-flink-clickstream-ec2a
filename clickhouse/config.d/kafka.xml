@@ -1,0 +1,12 @@
+<clickhouse>
+    <!--
+      Downstream Kafka consumer isolation for Flink 2-phase commit (EXACTLY_ONCE) sinks.
+      Without `read_committed`, aborted Kafka transactions left behind by a killed
+      Flink TaskManager before checkpoint completion would be ingested into ClickHouse.
+    -->
+    <kafka>
+        <isolation_level>read_committed</isolation_level>
+        <auto_offset_reset>earliest</auto_offset_reset>
+        <session_timeout_ms>15000</session_timeout_ms>
+    </kafka>
+</clickhouse>

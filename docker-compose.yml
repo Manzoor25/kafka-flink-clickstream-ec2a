@@ -1,0 +1,389 @@
+x-kafka-common: &kafka-common
+  image: apache/kafka:4.4.0
+  restart: unless-stopped
+  environment: &kafka-common-env
+    KAFKA_PROCESS_ROLES: broker,controller
+    KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9093,3@kafka-3:9093
+    KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+    KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+    KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+    CLUSTER_ID: 4L6g3nShT-eMCtK--X86sw
+    KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+    KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+    KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+    KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+    KAFKA_MIN_INSYNC_REPLICAS: 2
+    KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    KAFKA_TRANSACTION_MAX_TIMEOUT_MS: 900000
+    KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    KAFKA_HEAP_OPTS: "-Xms512m -Xmx512m"
+  healthcheck:
+    test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list > /dev/null 2>&1"]
+    interval: 5s
+    timeout: 5s
+    retries: 20
+    start_period: 10s
+
+x-flink-common: &flink-common
+  build:
+    context: .
+    dockerfile: flink/Dockerfile
+  image: clickstream-flink:2.2.1
+  environment: &flink-common-env
+    KAFKA_BOOTSTRAP_SERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
+    SCHEMA_REGISTRY_URL: http://schema-registry:8085
+    AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+    AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+    FLINK_PROPERTIES: |
+      jobmanager.rpc.address: flink-jobmanager
+      taskmanager.numberOfTaskSlots: 4
+      parallelism.default: 2
+      state.backend.type: rocksdb
+      state.backend.incremental: true
+      execution.checkpointing.dir: s3a://flink-checkpoints/checkpoints
+      execution.checkpointing.savepoint-dir: s3a://flink-checkpoints/savepoints
+      state.checkpoints.dir: s3a://flink-checkpoints/checkpoints
+      state.savepoints.dir: s3a://flink-checkpoints/savepoints
+      s3.endpoint: http://minio:9000
+      s3.path.style.access: true
+      s3.access-key: ${MINIO_ROOT_USER:-minioadmin}
+      s3.secret-key: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+      fs.s3a.endpoint: http://minio:9000
+      fs.s3a.path.style.access: true
+      fs.s3a.access.key: ${MINIO_ROOT_USER:-minioadmin}
+      fs.s3a.secret.key: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+      fs.s3a.connection.ssl.enabled: false
+      heartbeat.interval: 2000
+      heartbeat.timeout: 8000
+      restart-strategy.type: fixed-delay
+      restart-strategy.fixed-delay.attempts: 30
+      restart-strategy.fixed-delay.delay: 2 s
+      rest.flamegraph.enabled: true
+      web.cancel.enable: true
+
+services:
+  kafka-1:
+    <<: *kafka-common
+    hostname: kafka-1
+    ports:
+      - "${KAFKA_1_EXTERNAL_PORT:-19092}:19092"
+    environment:
+      <<: *kafka-common-env
+      KAFKA_NODE_ID: 1
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:19092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-1:9092,EXTERNAL://localhost:${KAFKA_1_EXTERNAL_PORT:-19092}
+    volumes:
+      - kafka_1_data:/var/lib/kafka/data
+
+  kafka-2:
+    <<: *kafka-common
+    hostname: kafka-2
+    ports:
+      - "${KAFKA_2_EXTERNAL_PORT:-19093}:19092"
+    environment:
+      <<: *kafka-common-env
+      KAFKA_NODE_ID: 2
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:19092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-2:9092,EXTERNAL://localhost:${KAFKA_2_EXTERNAL_PORT:-19093}
+    volumes:
+      - kafka_2_data:/var/lib/kafka/data
+
+  kafka-3:
+    <<: *kafka-common
+    hostname: kafka-3
+    ports:
+      - "${KAFKA_3_EXTERNAL_PORT:-19094}:19092"
+    environment:
+      <<: *kafka-common-env
+      KAFKA_NODE_ID: 3
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:19092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-3:9092,EXTERNAL://localhost:${KAFKA_3_EXTERNAL_PORT:-19094}
+    volumes:
+      - kafka_3_data:/var/lib/kafka/data
+
+  kafka-init:
+    image: apache/kafka:4.4.0
+    depends_on:
+      kafka-1:
+        condition: service_healthy
+      kafka-2:
+        condition: service_healthy
+      kafka-3:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -euo pipefail
+        BS="kafka-1:9092,kafka-2:9092,kafka-3:9092"
+        echo "Creating high-volume clickstream and compacted catalogue topics..."
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server "$$BS" --create --if-not-exists \
+          --topic clickstream.raw.v1 --partitions 12 --replication-factor 3 \
+          --config min.insync.replicas=2 \
+          --config retention.ms=604800000 \
+          --config compression.type=producer
+
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server "$$BS" --create --if-not-exists \
+          --topic product.catalog.v1 --partitions 12 --replication-factor 3 \
+          --config min.insync.replicas=2 \
+          --config cleanup.policy=compact \
+          --config min.compaction.lag.ms=86400000 \
+          --config min.cleanable.dirty.ratio=0.01
+
+        for topic in \
+          clickstream.late.v1 \
+          analytics.revenue_per_minute.v1 \
+          analytics.active_users_hopping.v1 \
+          analytics.user_sessions.v1 \
+          analytics.funnel_metrics.v1 \
+          analytics.top_products.v1 \
+          analytics.freshness_probes.v1; do
+          /opt/kafka/bin/kafka-topics.sh --bootstrap-server "$$BS" --create --if-not-exists \
+            --topic "$$topic" --partitions 6 --replication-factor 3 \
+            --config min.insync.replicas=2 \
+            --config retention.ms=604800000
+        done
+        echo "All Kafka 4.4 KRaft topics verified:"
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server "$$BS" --list
+
+  schema-registry:
+    image: ghcr.io/aiven-open/karapace:6.2.4
+    hostname: schema-registry
+    restart: unless-stopped
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+    command: ["karapace"]
+    ports:
+      - "${SCHEMA_REGISTRY_PORT:-8085}:8085"
+    environment:
+      KARAPACE_KARAPACE_REGISTRY: "true"
+      KARAPACE_KARAPACE_REST: "false"
+      KARAPACE_BOOTSTRAP_URI: kafka-1:9092,kafka-2:9092,kafka-3:9092
+      KARAPACE_HOST: 0.0.0.0
+      KARAPACE_PORT: "8085"
+      KARAPACE_ADVERTISED_HOSTNAME: schema-registry
+      KARAPACE_ADVERTISED_PORT: "8085"
+      KARAPACE_ADVERTISED_PROTOCOL: http
+      KARAPACE_MASTER_ELIGIBILITY: "true"
+      KARAPACE_TOPIC_NAME: _schemas
+      KARAPACE_GROUP_ID: karapace-schema-registry
+      KARAPACE_REPLICATION_FACTOR: "3"
+      KARAPACE_COMPATIBILITY: BACKWARD
+      KARAPACE_LOG_LEVEL: WARNING
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8085/_health', timeout=3)\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 8s
+
+  minio:
+    # Chainguard's official Apache-2.0 MinIO image pinned by digest (docker.io/minio/minio gated Sept 2026)
+    image: cgr.dev/chainguard/minio@sha256:59953701f8f8d0de81aab456f0b0b6c0a1804119415559bf7ede79d944108879
+    hostname: minio
+    user: "0:0"
+    restart: unless-stopped
+    command: ["server", "/data", "--address", ":9000", "--console-address", ":9001"]
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+    volumes:
+      - minio_data:/data
+
+  platform-init:
+    build:
+      context: .
+      dockerfile: generator/Dockerfile
+    image: clickstream-tools:1.0.0
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      schema-registry:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
+      SCHEMA_REGISTRY_URL: http://schema-registry:8085
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+    command: ["python", "-m", "generator.clickstream_gen.bootstrap_platform"]
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.8.38.9-alpine
+    hostname: clickhouse
+    restart: unless-stopped
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+    ports:
+      - "${CLICKHOUSE_HTTP_PORT:-8123}:8123"
+      - "${CLICKHOUSE_NATIVE_PORT:-9009}:9000"
+    environment:
+      CLICKHOUSE_DB: clickstream
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse_dev}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    volumes:
+      - ./clickhouse/config.d/kafka.xml:/etc/clickhouse-server/config.d/kafka.xml:ro
+      - ./clickhouse/init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+      - clickhouse_data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 8s
+
+  flink-jobmanager:
+    <<: *flink-common
+    hostname: flink-jobmanager
+    restart: unless-stopped
+    command: ["jobmanager"]
+    depends_on:
+      platform-init:
+        condition: service_completed_successfully
+    ports:
+      - "${FLINK_UI_PORT:-8081}:8081"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8081/overview > /dev/null || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  flink-taskmanager-1:
+    <<: *flink-common
+    hostname: flink-taskmanager-1
+    restart: unless-stopped
+    command: ["taskmanager"]
+    depends_on:
+      flink-jobmanager:
+        condition: service_healthy
+    volumes:
+      - flink_tm1_rocksdb:/tmp
+
+  flink-taskmanager-2:
+    <<: *flink-common
+    hostname: flink-taskmanager-2
+    restart: unless-stopped
+    command: ["taskmanager"]
+    depends_on:
+      flink-jobmanager:
+        condition: service_healthy
+    volumes:
+      - flink_tm2_rocksdb:/tmp
+
+  flink-job-submitter:
+    <<: *flink-common
+    depends_on:
+      flink-jobmanager:
+        condition: service_healthy
+      flink-taskmanager-1:
+        condition: service_started
+      flink-taskmanager-2:
+        condition: service_started
+      clickhouse:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -euo pipefail
+        echo "Waiting for at least 8 TaskManager slots on Flink JobManager..."
+        for i in $$(seq 1 30); do
+          SLOTS=$$(curl -fsS http://flink-jobmanager:8081/overview | grep -o '"slots-total":[0-9]*' | cut -d: -f2 || echo 0)
+          if [ "$${SLOTS:-0}" -ge 8 ]; then
+            echo "TaskManager slots ready: $$SLOTS"
+            break
+          fi
+          sleep 2
+        done
+
+        RUNNING=$$(curl -fsS http://flink-jobmanager:8081/jobs/overview)
+        if ! echo "$$RUNNING" | grep -q '"name":"clickstream-sql-analytics".*"state":"RUNNING"'; then
+          echo "Submitting Job 1: ClickstreamSqlPipelineJob (Flink SQL)..."
+          /opt/flink/bin/flink run -d -m flink-jobmanager:8081 \
+            -c io.clickstream.ClickstreamSqlPipelineJob \
+            /opt/flink/usrlib/clickstream-flink-jobs.jar \
+            --parallelism 2 \
+            --checkpoint-ms 2000 \
+            --idle-timeout "2 s" \
+            --consumer-group flink-sql-analytics-v1 \
+            --scan-startup-mode earliest-offset
+        fi
+
+        if ! echo "$$RUNNING" | grep -q 'clickstream-datastream-guard.*"state":"RUNNING"'; then
+          echo "Submitting Job 2: ClickstreamGuardAndFreshnessJob (Java DataStream API, v1)..."
+          /opt/flink/bin/flink run -d -m flink-jobmanager:8081 \
+            -c io.clickstream.ClickstreamGuardAndFreshnessJob \
+            /opt/flink/usrlib/clickstream-flink-jobs.jar \
+            --parallelism 2 \
+            --checkpoint-ms 2000 \
+            --allowed-lateness-ms 10000 \
+            --query-version v1 \
+            --consumer-group flink-datastream-guard-v1 \
+            --scan-startup-mode earliest
+        fi
+        echo "Both Flink streaming jobs are RUNNING!"
+
+  grafana:
+    build:
+      context: ./grafana
+      dockerfile: Dockerfile
+    image: clickstream-grafana:13.3.1
+    hostname: grafana
+    restart: unless-stopped
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/clickstream-realtime.json
+      GF_USERS_DEFAULT_THEME: dark
+    volumes:
+      - grafana_data:/var/lib/grafana
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  tools:
+    build:
+      context: .
+      dockerfile: generator/Dockerfile
+    image: clickstream-tools:1.0.0
+    profiles: ["tools"]
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
+      SCHEMA_REGISTRY_URL: http://schema-registry:8085
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse_dev}
+      FLINK_REST_URL: http://flink-jobmanager:8081
+      GRAFANA_URL: http://grafana:3000
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+    volumes:
+      - ./docs:/workspace/docs
+
+volumes:
+  kafka_1_data:
+  kafka_2_data:
+  kafka_3_data:
+  minio_data:
+  clickhouse_data:
+  grafana_data:
+  flink_tm1_rocksdb:
+  flink_tm2_rocksdb:
