@@ -32,12 +32,15 @@ x-flink-common: &flink-common
   environment: &flink-common-env
     KAFKA_BOOTSTRAP_SERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
     SCHEMA_REGISTRY_URL: http://schema-registry:8085
-    AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
-    AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+    AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY:-localdevminio}
+    AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:-localdevminio123}
     FLINK_PROPERTIES: |
       jobmanager.rpc.address: flink-jobmanager
       taskmanager.numberOfTaskSlots: 4
       parallelism.default: 2
+      cluster.evenly-spread-out-slots: true
+      heartbeat.interval: 2000
+      heartbeat.timeout: 8000
       state.backend.type: rocksdb
       state.backend.incremental: true
       execution.checkpointing.dir: s3a://flink-checkpoints/checkpoints
@@ -46,12 +49,12 @@ x-flink-common: &flink-common
       state.savepoints.dir: s3a://flink-checkpoints/savepoints
       s3.endpoint: http://minio:9000
       s3.path.style.access: true
-      s3.access-key: ${MINIO_ROOT_USER:-minioadmin}
-      s3.secret-key: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+      s3.access-key: ${S3_ACCESS_KEY:-localdevminio}
+      s3.secret-key: ${S3_SECRET_KEY:-localdevminio123}
       fs.s3a.endpoint: http://minio:9000
       fs.s3a.path.style.access: true
-      fs.s3a.access.key: ${MINIO_ROOT_USER:-minioadmin}
-      fs.s3a.secret.key: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+      fs.s3a.access.key: ${S3_ACCESS_KEY:-localdevminio}
+      fs.s3a.secret.key: ${S3_SECRET_KEY:-localdevminio123}
       fs.s3a.connection.ssl.enabled: false
       heartbeat.interval: 2000
       heartbeat.timeout: 8000
@@ -66,12 +69,12 @@ services:
     <<: *kafka-common
     hostname: kafka-1
     ports:
-      - "${KAFKA_1_EXTERNAL_PORT:-19092}:19092"
+      - "${KAFKA_1_PORT:-19092}:19092"
     environment:
       <<: *kafka-common-env
       KAFKA_NODE_ID: 1
       KAFKA_LISTENERS: INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:19092,CONTROLLER://0.0.0.0:9093
-      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-1:9092,EXTERNAL://localhost:${KAFKA_1_EXTERNAL_PORT:-19092}
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-1:9092,EXTERNAL://localhost:${KAFKA_1_PORT:-19092}
     volumes:
       - kafka_1_data:/var/lib/kafka/data
 
@@ -79,12 +82,12 @@ services:
     <<: *kafka-common
     hostname: kafka-2
     ports:
-      - "${KAFKA_2_EXTERNAL_PORT:-19093}:19092"
+      - "${KAFKA_2_PORT:-19093}:19092"
     environment:
       <<: *kafka-common-env
       KAFKA_NODE_ID: 2
       KAFKA_LISTENERS: INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:19092,CONTROLLER://0.0.0.0:9093
-      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-2:9092,EXTERNAL://localhost:${KAFKA_2_EXTERNAL_PORT:-19093}
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-2:9092,EXTERNAL://localhost:${KAFKA_2_PORT:-19093}
     volumes:
       - kafka_2_data:/var/lib/kafka/data
 
@@ -92,12 +95,12 @@ services:
     <<: *kafka-common
     hostname: kafka-3
     ports:
-      - "${KAFKA_3_EXTERNAL_PORT:-19094}:19092"
+      - "${KAFKA_3_PORT:-19094}:19092"
     environment:
       <<: *kafka-common-env
       KAFKA_NODE_ID: 3
       KAFKA_LISTENERS: INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:19092,CONTROLLER://0.0.0.0:9093
-      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-3:9092,EXTERNAL://localhost:${KAFKA_3_EXTERNAL_PORT:-19094}
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-3:9092,EXTERNAL://localhost:${KAFKA_3_PORT:-19094}
     volumes:
       - kafka_3_data:/var/lib/kafka/data
 
@@ -115,7 +118,12 @@ services:
       - |
         set -euo pipefail
         BS="kafka-1:9092,kafka-2:9092,kafka-3:9092"
-        echo "Creating high-volume clickstream and compacted catalogue topics..."
+        echo "Creating Karapace schema topic, high-volume clickstream, and compacted catalogue topics..."
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server "$$BS" --create --if-not-exists \
+          --topic _schemas --partitions 1 --replication-factor 3 \
+          --config cleanup.policy=compact \
+          --config min.insync.replicas=2
+
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server "$$BS" --create --if-not-exists \
           --topic clickstream.raw.v1 --partitions 12 --replication-factor 3 \
           --config min.insync.replicas=2 \
@@ -152,7 +160,7 @@ services:
     depends_on:
       kafka-init:
         condition: service_completed_successfully
-    command: ["karapace"]
+    command: ["/venv/bin/python", "-m", "karapace"]
     ports:
       - "${SCHEMA_REGISTRY_PORT:-8085}:8085"
     environment:
@@ -169,9 +177,10 @@ services:
       KARAPACE_GROUP_ID: karapace-schema-registry
       KARAPACE_REPLICATION_FACTOR: "3"
       KARAPACE_COMPATIBILITY: BACKWARD
+      KARAPACE_WAITING_TIME_BEFORE_ACTING_AS_MASTER_MS: "1000"
       KARAPACE_LOG_LEVEL: WARNING
     healthcheck:
-      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8085/_health', timeout=3)\""]
+      test: ["CMD-SHELL", "/venv/bin/python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8085/_health', timeout=3)\""]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -188,8 +197,8 @@ services:
       - "${MINIO_API_PORT:-9000}:9000"
       - "${MINIO_CONSOLE_PORT:-9001}:9001"
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-localdevminio}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-localdevminio123}
     volumes:
       - minio_data:/data
 
@@ -209,8 +218,8 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
       SCHEMA_REGISTRY_URL: http://schema-registry:8085
       MINIO_ENDPOINT: http://minio:9000
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-localdevminio}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-localdevminio123}
     command: ["python", "-m", "generator.clickstream_gen.bootstrap_platform"]
 
   clickhouse:
@@ -373,8 +382,8 @@ services:
       FLINK_REST_URL: http://flink-jobmanager:8081
       GRAFANA_URL: http://grafana:3000
       MINIO_ENDPOINT: http://minio:9000
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-localdevminio}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-localdevminio123}
     volumes:
       - ./docs:/workspace/docs
 

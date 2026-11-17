@@ -71,8 +71,12 @@ def inspect_flink_jobs(flink_url: str) -> list[dict[str, Any]]:
         for v in detail.get("vertices", []):
             vid = v["id"]
             bp = requests.get(f"{base}/jobs/{jid}/vertices/{vid}/backpressure", timeout=5.0).json()
-            level = bp.get("backpressureLevel", bp.get("status", "ok"))
             subtasks = bp.get("subtasks", [])
+            st_levels = [st.get("backpressureLevel", "ok") for st in subtasks]
+            level = (
+                "high" if "high" in st_levels
+                else ("low" if "low" in st_levels else bp.get("backpressureLevel", "ok"))
+            )
             v_bp = max((float(st.get("ratio", 0.0)) for st in subtasks), default=0.0)
             v_busy = max((float(st.get("busyRatio", 0.0)) for st in subtasks), default=0.0)
             if v_bp > max_bp:

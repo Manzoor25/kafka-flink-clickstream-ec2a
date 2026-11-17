@@ -17,8 +17,12 @@ if [ "$ACTION" = "list" ]; then
   exit 0
 fi
 
-JID=$($COMPOSE exec -T flink-jobmanager curl -fsS http://localhost:8081/jobs/overview | \
-  python3 -c "import json,sys; jobs=json.load(sys.stdin)['jobs']; matches=[j['jid'] for j in jobs if j['state']=='RUNNING' and '${NAME_FILTER}' in j['name']]; print(matches[0] if matches else '')")
+JID=$($COMPOSE run --rm tools python -c "
+import requests
+jobs = requests.get('http://flink-jobmanager:8081/jobs/overview', timeout=5).json()['jobs']
+matches = [j['jid'] for j in jobs if j['state'] == 'RUNNING' and '${NAME_FILTER}' in j['name']]
+print(matches[0] if matches else '')
+" | tail -n 1 | tr -d '\r')
 
 if [ -z "$JID" ]; then
   echo "ERROR: No RUNNING Flink job matching '${NAME_FILTER}' found." >&2

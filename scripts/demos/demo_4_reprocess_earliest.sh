@@ -46,8 +46,11 @@ print(json.dumps(snap))
 echo "  Pre-wipe snapshot : $PRE_SNAPSHOT"
 
 echo "=== [Demo 4] 2/5 Cancelling running Flink jobs prior to clean earliest-offset replay ==="
-JIDS=$($COMPOSE exec -T flink-jobmanager curl -fsS http://localhost:8081/jobs/overview | \
-  python3 -c "import json,sys; print(' '.join(j['jid'] for j in json.load(sys.stdin)['jobs'] if j['state']=='RUNNING'))")
+JIDS=$($COMPOSE run --rm tools python -c "
+import requests
+jobs = requests.get('http://flink-jobmanager:8081/jobs/overview', timeout=5).json()['jobs']
+print(' '.join(j['jid'] for j in jobs if j['state'] == 'RUNNING'))
+" | tail -n 1 | tr -d '\r')
 for jid in $JIDS; do
   echo "  Cancelling Flink job $jid..."
   $COMPOSE exec -T flink-jobmanager /opt/flink/bin/flink cancel -m localhost:8081 "$jid" > /dev/null
@@ -64,13 +67,14 @@ print(f'  All serving tables truncated (revenue_per_minute rows={rem}).')
 "
 
 echo "=== [Demo 4] 4/5 Redeploying Flink SQL & DataStream jobs from Kafka earliest-offset ==="
+REPLAY_ID=$(date +%s)
 $COMPOSE exec -T flink-jobmanager /opt/flink/bin/flink run -d -m localhost:8081 \
   -c io.clickstream.ClickstreamSqlPipelineJob \
   /opt/flink/usrlib/clickstream-flink-jobs.jar \
   --parallelism 2 \
   --checkpoint-ms 2000 \
   --idle-timeout "2 s" \
-  --consumer-group flink-sql-analytics-v1 \
+  --consumer-group "flink-sql-analytics-replay-${REPLAY_ID}" \
   --scan-startup-mode earliest-offset
 
 $COMPOSE exec -T flink-jobmanager /opt/flink/bin/flink run -d -m localhost:8081 \
@@ -80,7 +84,7 @@ $COMPOSE exec -T flink-jobmanager /opt/flink/bin/flink run -d -m localhost:8081 
   --checkpoint-ms 2000 \
   --allowed-lateness-ms 10000 \
   --query-version v2 \
-  --consumer-group flink-datastream-guard-v1 \
+  --consumer-group "flink-datastream-guard-replay-${REPLAY_ID}" \
   --scan-startup-mode earliest
 
 echo "  Waiting for earliest-offset replay to catch up to Kafka high watermarks..."
@@ -91,7 +95,7 @@ pw = os.environ['CLICKHOUSE_PASSWORD']
 def q(sql):
     return requests.post('http://clickhouse:8123', params={'user':'default','password':pw}, data=sql).text.strip()
 
-deadline = time.monotonic() + 45.0
+deadline = time.monotonic() + 75.0
 post = {}
 while time.monotonic() < deadline:
     post = {
@@ -103,7 +107,11 @@ while time.monotonic() < deadline:
         'top_products_rows': int(q('SELECT count() FROM clickstream.top_products FINAL')),
         'unique_events_total': int(q('SELECT (SELECT count() FROM clickstream.freshness_probes FINAL) + (SELECT count() FROM clickstream.late_events FINAL)')),
     }
-    if post['unique_events_total'] >= pre['unique_events_total'] and post['rev_windows'] >= pre['rev_windows']:
+    if (
+        post['unique_events_total'] >= pre['unique_events_total']
+        and post['rev_windows'] >= pre['rev_windows']
+        and post['rev_events'] >= pre['rev_events']
+    ):
         time.sleep(2.5)
         post = {
             'rev_windows': int(q('SELECT count() FROM clickstream.revenue_per_minute FINAL')),

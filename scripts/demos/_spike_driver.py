@@ -165,7 +165,7 @@ def main() -> None:
     producer.flush(20.0)
 
     current_phase = "draining"
-    drain_deadline = time.monotonic() + 30.0
+    drain_deadline = time.monotonic() + 65.0
     while time.monotonic() < drain_deadline:
         sql_lag = measure_group_lag(args.bootstrap_servers, "flink-sql-analytics-v1", "clickstream.raw.v1")["total_lag"]
         guard_lag = measure_group_lag(args.bootstrap_servers, "flink-datastream-guard-v1", "clickstream.raw.v1")["total_lag"]

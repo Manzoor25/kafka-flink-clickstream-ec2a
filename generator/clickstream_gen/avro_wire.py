@@ -58,24 +58,40 @@ def register_schema(
     base = registry_url.rstrip("/")
     schema_text = Path(schema_path).read_text(encoding="utf-8")
     schema_dict = json.loads(schema_text)
+    headers = {"Content-Type": "application/vnd.schemaregistry.v1+json"}
 
-    # Set subject compatibility mode (idempotent)
-    requests.put(
-        f"{base}/config/{subject}",
-        json={"compatibility": compatibility},
-        headers={"Content-Type": "application/vnd.schemaregistry.v1+json"},
-        timeout=timeout_sec,
-    ).raise_for_status()
+    deadline = time.monotonic() + 45.0
+    last_err: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            cfg_resp = requests.put(
+                f"{base}/config/{subject}",
+                json={"compatibility": compatibility},
+                headers=headers,
+                timeout=timeout_sec,
+            )
+            if cfg_resp.status_code >= 500:
+                time.sleep(1.0)
+                continue
+            cfg_resp.raise_for_status()
 
-    resp = requests.post(
-        f"{base}/subjects/{subject}/versions",
-        json={"schema": json.dumps(schema_dict), "schemaType": "AVRO"},
-        headers={"Content-Type": "application/vnd.schemaregistry.v1+json"},
-        timeout=timeout_sec,
-    )
-    resp.raise_for_status()
-    schema_id = int(resp.json()["id"])
-    return ConfluentAvroCodec(schema_dict=schema_dict, schema_id=schema_id)
+            resp = requests.post(
+                f"{base}/subjects/{subject}/versions",
+                json={"schema": json.dumps(schema_dict), "schemaType": "AVRO"},
+                headers=headers,
+                timeout=timeout_sec,
+            )
+            if resp.status_code >= 500:
+                time.sleep(1.0)
+                continue
+            resp.raise_for_status()
+            schema_id = int(resp.json()["id"])
+            return ConfluentAvroCodec(schema_dict=schema_dict, schema_id=schema_id)
+        except requests.RequestException as exc:
+            last_err = exc
+            time.sleep(1.0)
+
+    raise TimeoutError(f"Timed out registering subject {subject} at {base}: {last_err}")
 
 
 def wait_for_registry(registry_url: str, max_wait_sec: float = 60.0) -> None:

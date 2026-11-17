@@ -28,9 +28,19 @@ demo: ## Generate realistic e-commerce sessions, flash-sale catalogue updates, d
 		--late-rate 0.02 \
 		--spike-multiplier 4.0
 
-test-unit: ## Run Flink JUnit 5 MiniCluster SQL/DataStream tests and Python generator/recount unit tests (no Docker stack required)
-	mvn -B -f flink/pom.xml test
-	pytest -q generator/tests
+test-unit: ## Run Flink JUnit 5 MiniCluster SQL/DataStream tests and Python generator/recount unit tests (host or Docker fallback)
+	@if command -v mvn >/dev/null 2>&1; then \
+		mvn -B -f flink/pom.xml test; \
+	else \
+		docker run --rm -v "$$(pwd):/repo" -w /repo maven:3.9.9-eclipse-temurin-21-alpine mvn -B -f flink/pom.xml test; \
+	fi
+	@if [ -x .venv/bin/pytest ]; then \
+		.venv/bin/pytest -q generator/tests; \
+	elif command -v pytest >/dev/null 2>&1; then \
+		pytest -q generator/tests; \
+	else \
+		$(COMPOSE) --profile tools build -q tools && $(COMPOSE) --profile tools run --rm --no-deps tools pytest -q generator/tests; \
+	fi
 
 test-smoke: ## Verify running cluster health, streaming vs batch recount exact match, and end-to-end freshness SLA
 	$(COMPOSE) run --rm tools python scripts/verify_recount.py --wait-for-windows --strict

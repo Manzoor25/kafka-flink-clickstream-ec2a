@@ -1,0 +1,24 @@
+{
+  "probe_count": 300,
+  "flink_processing_ms": {
+    "p50": 216.0,
+    "p95": 1686.0,
+    "p99": 2147.0
+  },
+  "clickhouse_serving_freshness_ms": {
+    "p50": 3737.0,
+    "p95": 5485.0,
+    "p99": 6072.0
+  },
+  "grafana_dashboard_e2e_freshness_ms": {
+    "min": 1869.0,
+    "p50": 3902.0,
+    "p95": 5766.0,
+    "p99": 6188.0,
+    "max": 6356.0
+  },
+  "kafka_isolation_demo": {
+    "read_uncommitted": 10,
+    "read_committed": 5
+  }
+}

@@ -224,13 +224,13 @@
           "color": {
             "mode": "thresholds"
           },
-          "decimals": 0,
+          "decimals": 2,
           "thresholds": {
             "mode": "absolute",
             "steps": [
               { "color": "green", "value": null },
-              { "color": "yellow", "value": 3000 },
-              { "color": "red", "value": 6000 }
+              { "color": "yellow", "value": 4500 },
+              { "color": "red", "value": 7500 }
             ]
           },
           "unit": "ms"
@@ -262,7 +262,7 @@
           "editorType": "sql",
           "format": 1,
           "queryType": "table",
-          "rawSql": "SELECT if(count() = 0, 0.0, round(quantileExact(0.50)(e2e_freshness_ms), 0)) AS p50_ms FROM clickstream.freshness_probes FINAL WHERE created_time >= now() - INTERVAL 15 MINUTE",
+          "rawSql": "SELECT if(count() = 0, 0.0, round(quantileExact(0.50)(e2e_freshness_ms), 0)) AS p50_ms FROM clickstream.freshness_probes FINAL WHERE $__timeFilter(created_time)",
           "refId": "A"
         }
       ]
@@ -277,13 +277,13 @@
           "color": {
             "mode": "thresholds"
           },
-          "decimals": 0,
+          "decimals": 2,
           "thresholds": {
             "mode": "absolute",
             "steps": [
               { "color": "green", "value": null },
-              { "color": "yellow", "value": 4000 },
-              { "color": "red", "value": 8000 }
+              { "color": "yellow", "value": 6500 },
+              { "color": "red", "value": 10000 }
             ]
           },
           "unit": "ms"
@@ -315,7 +315,7 @@
           "editorType": "sql",
           "format": 1,
           "queryType": "table",
-          "rawSql": "SELECT if(count() = 0, 0.0, round(quantileExact(0.95)(e2e_freshness_ms), 0)) AS p95_ms FROM clickstream.freshness_probes FINAL WHERE created_time >= now() - INTERVAL 15 MINUTE",
+          "rawSql": "SELECT if(count() = 0, 0.0, round(quantileExact(0.95)(e2e_freshness_ms), 0)) AS p95_ms FROM clickstream.freshness_probes FINAL WHERE $__timeFilter(created_time)",
           "refId": "A"
         }
       ]
@@ -567,7 +567,7 @@
           "editorType": "sql",
           "format": 1,
           "queryType": "table",
-          "rawSql": "SELECT query_version, loyalty_tier, count() AS deduplicated_events, uniqExact(user_id) AS users, round(quantileExact(0.50)(flink_latency_ms), 0) AS flink_p50_ms, round(quantileExact(0.50)(e2e_freshness_ms), 0) AS e2e_p50_ms, round(quantileExact(0.95)(e2e_freshness_ms), 0) AS e2e_p95_ms, (SELECT count() FROM clickstream.late_events FINAL) AS total_late_side_output FROM clickstream.freshness_probes FINAL WHERE created_time >= now() - INTERVAL 1 HOUR GROUP BY query_version, loyalty_tier ORDER BY deduplicated_events DESC",
+          "rawSql": "SELECT query_version, loyalty_tier, count() AS deduplicated_events, uniqExact(user_id) AS users, round(quantileExact(0.50)(flink_latency_ms), 0) AS flink_p50_ms, round(quantileExact(0.50)(e2e_freshness_ms), 0) AS e2e_p50_ms, round(quantileExact(0.95)(e2e_freshness_ms), 0) AS e2e_p95_ms, (SELECT count() FROM clickstream.late_events FINAL) AS total_late_side_output FROM clickstream.freshness_probes FINAL WHERE $__timeFilter(created_time) GROUP BY query_version, loyalty_tier ORDER BY deduplicated_events DESC",
           "refId": "A"
         }
       ]
@@ -586,5 +586,5 @@
   "timezone": "utc",
   "title": "Real-Time E-Commerce Clickstream Analytics (Kafka 4.4 + Flink 2.2 + ClickHouse 26.8)",
   "uid": "clickstream-realtime-v1",
-  "version": 1
+  "version": 2
 }

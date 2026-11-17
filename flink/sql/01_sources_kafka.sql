@@ -26,6 +26,8 @@ CREATE TABLE clickstream_raw (
     'topic' = 'clickstream.raw.v1',
     'properties.bootstrap.servers' = '${KAFKA_BOOTSTRAP}',
     'properties.group.id' = '${CONSUMER_GROUP}',
+    'properties.max.partition.fetch.bytes' = '4096',
+    'properties.max.poll.records' = '200',
     'scan.startup.mode' = '${SCAN_STARTUP_MODE}',
     'format' = 'avro-confluent',
     'avro-confluent.url' = '${SCHEMA_REGISTRY_URL}'
