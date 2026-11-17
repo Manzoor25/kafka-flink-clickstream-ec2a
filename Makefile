@@ -35,9 +35,9 @@ test-unit: ## Run Flink JUnit 5 MiniCluster SQL/DataStream tests and Python gene
 		docker run --rm -v "$$(pwd):/repo" -w /repo maven:3.9.9-eclipse-temurin-21-alpine mvn -B -f flink/pom.xml test; \
 	fi
 	@if [ -x .venv/bin/pytest ]; then \
-		.venv/bin/pytest -q generator/tests; \
+		PYTHONPATH=. .venv/bin/pytest -q generator/tests; \
 	elif command -v pytest >/dev/null 2>&1; then \
-		pytest -q generator/tests; \
+		PYTHONPATH=. pytest -q generator/tests; \
 	else \
 		$(COMPOSE) --profile tools build -q tools && $(COMPOSE) --profile tools run --rm --no-deps tools pytest -q generator/tests; \
 	fi
