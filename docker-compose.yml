@@ -56,8 +56,6 @@ x-flink-common: &flink-common
       fs.s3a.access.key: ${S3_ACCESS_KEY:-localdevminio}
       fs.s3a.secret.key: ${S3_SECRET_KEY:-localdevminio123}
       fs.s3a.connection.ssl.enabled: false
-      heartbeat.interval: 2000
-      heartbeat.timeout: 8000
       restart-strategy.type: fixed-delay
       restart-strategy.fixed-delay.attempts: 30
       restart-strategy.fixed-delay.delay: 2 s
